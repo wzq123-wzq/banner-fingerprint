@@ -1,0 +1,239 @@
+# =============================================================================
+# Banner 指纹识别规则库（与程序代码完全解耦，修改本文件或通过 RULES_DIR 挂载
+# 覆盖/追加，均无需重新编译程序）
+#
+# 字段说明：
+#   priority                 协议判定优先级（数值大者先判定）
+#   matcher                  协议级正则（Go RE2 语法），命中即判定为该协议
+#   protocol_confidence      协议命中但产品无法细分时的置信度
+#   default_product          未命中任何 products 时的默认产品（“协议名即产品名”类）
+#   version_regex            默认产品的版本提取正则，可用 (?P<version>) 命名捕获
+#   confidence               产品命中且带版本时的置信度
+#   no_version_confidence    产品命中但无法提取版本时的置信度
+#   ports / port_hint_confidence  banner 完全无信息时的端口兜底（低置信度）
+#   os_hint_regex            操作系统提示提取正则（(?P<os>) 或第一个捕获组）
+#   products                 产品级指纹列表（priority 大者先尝试匹配）
+# =============================================================================
+version: 1
+protocols:
+  # ---------------- SSH ----------------
+  - name: SSH
+    priority: 100
+    matcher: '^SSH-\d'
+    protocol_confidence: 0.6
+    ports: [22, 2222]
+    port_hint_confidence: 0.35
+    # 发行版注释形如 "Ubuntu-3"、"Debian-1"
+    os_hint_regex: '\b(?P<os>Ubuntu|Debian|CentOS|Fedora|RHEL|RedHat|FreeBSD|OpenBSD|Raspbian|Kali|Arch)(?:[-/ ][0-9][\w.]*)?'
+    products:
+      - product: OpenSSH
+        priority: 10
+        regex: 'OpenSSH[_-](?P<version>\d+(?:\.\d+)*[0-9A-Za-z._-]*)'
+        confidence: 0.95
+        no_version_confidence: 0.7
+      - product: dropbear
+        priority: 9
+        regex: '(?i)dropbear[_ ]?(?P<version>\d+(?:\.\d+)*)'
+        confidence: 0.95
+        no_version_confidence: 0.7
+
+  # ---------------- HTTP ----------------
+  - name: HTTP
+    priority: 95
+    # 响应首行 / Server 响应头 / 请求首行 三种形态
+    matcher: '(?mi)(?:^HTTP/\d|^Server:|^(?:GET|POST|HEAD|PUT|OPTIONS|DELETE) \S+ HTTP/\d)'
+    protocol_confidence: 0.6
+    ports: [80, 443, 8080, 8443, 8888]
+    port_hint_confidence: 0.3
+    # Server 头括号注释，如 "nginx/1.18.0 (Ubuntu)"
+    os_hint_regex: '\((?P<os>[^()]{1,32})\)'
+    products:
+      - product: Tomcat
+        priority: 30
+        regex: '(?i)Apache-Coyote/'
+        version_regex: '(?i)Tomcat/(?P<version>[\d.]+)'
+        confidence: 0.85
+        no_version_confidence: 0.7
+      - product: OpenResty
+        priority: 29
+        regex: '(?i)openresty/(?P<version>[\d.]+)'
+        confidence: 0.9
+      - product: nginx
+        priority: 28
+        regex: '(?i)nginx/(?P<version>[\d.]+)'
+        confidence: 0.9
+        no_version_confidence: 0.7
+      - product: Apache
+        priority: 27
+        regex: '(?i)\bApache/(?P<version>[\d.]+)'
+        confidence: 0.9
+        no_version_confidence: 0.7
+      - product: Jetty
+        priority: 26
+        regex: '(?i)Jetty/(?P<version>[\d.]+(?:\.[A-Za-z0-9_-]+)*)'
+        confidence: 0.85
+        no_version_confidence: 0.65
+      - product: Microsoft-IIS
+        priority: 25
+        regex: '(?i)Microsoft-IIS/(?P<version>[\d.]+)'
+        confidence: 0.9
+      - product: Elasticsearch
+        priority: 24
+        regex: '(?i)"cluster_name"\s*:|\bElasticsearch\b'
+        version_regex: '(?i)"number"\s*:\s*"(?P<version>[^"]+)"'
+        confidence: 0.9
+        no_version_confidence: 0.7
+      - product: lighttpd
+        priority: 23
+        regex: '(?i)lighttpd/(?P<version>[\d.]+)'
+        confidence: 0.9
+      - product: Caddy
+        priority: 22
+        regex: '(?i)\bCaddy\b'
+        version_regex: '(?i)Caddy/v?(?P<version>[\d.]+)'
+        confidence: 0.85
+        no_version_confidence: 0.65
+      - product: Gunicorn
+        priority: 21
+        regex: '(?i)gunicorn/(?P<version>[\d.]+)'
+        confidence: 0.9
+
+  # ---------------- MySQL / MariaDB ----------------
+  - name: MySQL
+    priority: 90
+    # 服务端握手报文字节流：\n 后跟三段式版本号、\0 结尾（如 "J\x00\x00\x00\n8.0.32\x00"）
+    matcher: '(?:\A|\x0a)(?P<version>\d+\.\d+\.\d+(?:[0-9A-Za-z._-]*))(?:\x00|\z)'
+    default_product: MySQL
+    confidence: 0.9
+    no_version_confidence: 0.7
+    protocol_confidence: 0.6
+    ports: [3306, 3307]
+    port_hint_confidence: 0.35
+    products:
+      # MariaDB 兼容协议伪装为 5.5.5，必须先于默认产品判定
+      - product: MariaDB
+        priority: 10
+        regex: '(?i)5\.5\.5-(?P<version>\d+\.\d+\.\d+)-MariaDB'
+        confidence: 0.95
+
+  # ---------------- Redis ----------------
+  - name: Redis
+    priority: 88
+    # 对 PING/GET 等探测的各类回复，或 INFO 输出
+    matcher: '(?i)(?:^[+-](?:ERR|NOAUTH|WRONGTYPE|DENIED|PONG|OK)\b|redis_version:)'
+    default_product: Redis
+    version_regex: '(?m)redis_version:(?P<version>[\d.]+)'
+    confidence: 0.95
+    no_version_confidence: 0.7
+    protocol_confidence: 0.6
+    ports: [6379, 6380]
+    port_hint_confidence: 0.35
+
+  # ---------------- SMTP ----------------
+  # 注意：priority 必须高于 FTP，避免 "220 ..." 欢迎语被 FTP 抢先判定
+  - name: SMTP
+    priority: 85
+    matcher: '(?i)^220[ -].*(?:ESMTP|SMTP)'
+    protocol_confidence: 0.6
+    ports: [25, 465, 587]
+    port_hint_confidence: 0.35
+    products:
+      - product: Postfix
+        priority: 10
+        regex: '(?i)Postfix'
+        version_regex: '(?i)Postfix[ /-]?(?P<version>\d+\.\d+(?:\.\d+)?)'
+        confidence: 0.9
+        no_version_confidence: 0.75
+      - product: Exim
+        priority: 9
+        regex: '(?i)Exim'
+        version_regex: '(?i)Exim[ /-]?(?P<version>\d+\.\d+(?:\.\d+)?)'
+        confidence: 0.9
+        no_version_confidence: 0.75
+      - product: Sendmail
+        priority: 8
+        regex: '(?i)Sendmail'
+        version_regex: '(?i)Sendmail[ /-]?(?P<version>\d+\.\d+(?:\.\d+)?)'
+        confidence: 0.9
+        no_version_confidence: 0.75
+      - product: Microsoft ESMTP
+        priority: 7
+        regex: '(?i)Microsoft ESMTP'
+        version_regex: '(?i)[Vv]ersion:[ ]*(?P<version>[\d.]+)'
+        confidence: 0.85
+        no_version_confidence: 0.7
+
+  # ---------------- FTP ----------------
+  - name: FTP
+    priority: 80
+    matcher: '^220[ -]'
+    protocol_confidence: 0.6
+    ports: [21, 2121]
+    port_hint_confidence: 0.35
+    products:
+      - product: ProFTPD
+        priority: 20
+        regex: '(?i)ProFTPD[ /-]?(?P<version>\d+\.\d+(?:\.\d+)?[0-9A-Za-z]*)'
+        confidence: 0.9
+        no_version_confidence: 0.75
+      - product: vsFTPd
+        priority: 19
+        regex: '(?i)\(vsFTPd[ /](?P<version>\d+\.\d+\.\d+)\)'
+        confidence: 0.9
+      - product: Pure-FTPd
+        priority: 18
+        regex: '(?i)Pure-FTPd'
+        confidence: 0.9
+        no_version_confidence: 0.75
+      - product: Microsoft FTP
+        priority: 17
+        regex: '(?i)Microsoft FTP Service'
+        version_regex: '(?i)[Vv]ersion[ /]?(?P<version>\d+(?:\.\d+)+)'
+        confidence: 0.85
+        no_version_confidence: 0.7
+      - product: FileZilla Server
+        priority: 16
+        regex: '(?i)FileZilla Server'
+        version_regex: '(?i)FileZilla Server[ /](?P<version>[\d.]+)'
+        confidence: 0.85
+        no_version_confidence: 0.7
+      - product: Serv-U
+        priority: 15
+        regex: '(?i)Serv-U FTP'
+        version_regex: '(?i)Serv-U FTP Server v?(?P<version>[\d.]+)'
+        confidence: 0.85
+        no_version_confidence: 0.7
+
+  # ---------------- PostgreSQL ----------------
+  - name: PostgreSQL
+    priority: 75
+    # 连接被拒时服务端返回的 FATAL 错误报文
+    matcher: '(?i)(?:PostgreSQL|FATAL:|password authentication)'
+    default_product: PostgreSQL
+    version_regex: '(?i)PostgreSQL[ /-]?(?P<version>\d+(?:\.\d+)+)'
+    confidence: 0.9
+    no_version_confidence: 0.7
+    protocol_confidence: 0.6
+    ports: [5432, 5433]
+    port_hint_confidence: 0.35
+
+  # ---------------- TLS ----------------
+  # 原始 TLS 记录层报文（0x16 握手 / 0x15 告警 / 0x17 应用数据）
+  - name: TLS
+    priority: 70
+    matcher: '^[\x15-\x17]\x03[\x00-\x04]'
+    protocol_confidence: 0.6
+
+  # ---------------- 端口兜底协议（banner 无法提供信息时） ----------------
+  - name: MongoDB
+    priority: 10
+    ports: [27017]
+    port_hint_confidence: 0.35
+  - name: Memcached
+    priority: 9
+    ports: [11211]
+    port_hint_confidence: 0.35
+  - name: RDP
+    priority: 8
+    ports: [3389]
+    port_hint_confidence: 0.35
