@@ -1,0 +1,74 @@
+# =============================================================================
+# Banner 指纹识别系统 — 生产级 Docker Compose 编排
+#
+# 一键启动:          docker compose up --build
+# 查看识别结果:      docker compose logs client
+# 手动调用 API:      curl -s http://localhost:${SERVER_PORT:-8080}/health
+#
+# 生产级要点:
+#   - 容器间访问收敛: client 仅通过 compose 网络 DNS (http://server:8080) 访问
+#     server，不依赖宿主机 IP/端口；server 的宿主机端口发布仅供人工验证。
+#   - 真实健康检测:   server 提供 HEALTHCHECK（二进制自检 /health 接口，scratch
+#     镜像无 shell 也能用），client 以 depends_on: service_healthy 等待，无 sleep。
+#   - 权限收紧:       全部容器非 root 运行、只读根文件系统、去除全部 capabilities、
+#     禁止提权。
+# =============================================================================
+services:
+  # ---- 识别服务端（常驻 API）----
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: banner-fingerprint/server:latest
+    ports:
+      - "${SERVER_PORT:-8080}:8080"   # 仅对宿主机发布，供人工验证；容器间不走此端口
+    environment:
+      # 外部规则目录：同名协议覆盖内置规则、新协议直接追加，无需重编译
+      - RULES_DIR=/rules
+    volumes:
+      - ./server/rules:/rules:ro
+    read_only: true                    # 只读根文件系统
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    cap_drop:
+      - ALL                            # 去除全部 Linux capabilities
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # 用二进制自检真实探测 /health 接口
+      test: ["CMD", "/app/server", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks: [fp-net]
+
+  # ---- 识别客户端（一次性任务：读取文件 → 发送 → 展示，跑完即退出）----
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    image: banner-fingerprint/client:latest
+    depends_on:
+      server:
+        condition: service_healthy    # 真实健康依赖：等 server 通过健康检测后才启动
+    environment:
+      - SERVER_URL=http://server:8080  # 仅通过 compose 网络 DNS 访问
+      - INPUT_FILE=/data/banners.json
+    volumes:
+      - ./samples/banners.json:/data/banners.json:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"                     # 一次性任务：结果通过 docker compose logs client 查看
+    networks: [fp-net]
+
+networks:
+  fp-net:
+    driver: bridge

@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: 静态检查
+        run: go vet -mod=vendor ./...
+      - name: 单元测试（含竞态检测）
+        run: go test -mod=vendor -race ./...
+      - name: 构建 server 镜像
+        run: docker build -f server/Dockerfile -t banner-fp-server .
+      - name: 构建 client 镜像
+        run: docker build -f client/Dockerfile -t banner-fp-client .
